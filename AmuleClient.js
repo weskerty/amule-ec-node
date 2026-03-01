@@ -354,7 +354,21 @@ class AmuleClient {
       await new Promise(resolve => setTimeout(resolve, intervalMs));
     }
 
-    return this.getSearchResults?.() ?? null;
+    const [searchRes, sharedFiles, downloadQueue] = await Promise.all([
+      this.getSearchResults(),
+      this.getSharedFiles(),
+      this.getDownloadQueue()
+    ]);
+
+    const sharedHashes = new Set(sharedFiles.map(f => f.fileHash));
+    const dlHashes = new Set(downloadQueue.map(f => f.fileHash));
+
+    searchRes.results.forEach(r => {
+      r.present = sharedHashes.has(r.fileHash);
+      r.currentDl = dlHashes.has(r.fileHash);
+    });
+
+    return searchRes;
   }
 
   async downloadSearchResult(fileHash, categoryId = 0) {
@@ -652,6 +666,83 @@ class AmuleClient {
     return response.opcode === EC_OPCODES.EC_OP_NOOP || response.opcode === 0x01;
   }
  
+  async getPreferences() {
+    const reqTags = [
+      this.session.createTag(
+        EC_TAGS.EC_TAG_SELECT_PREFS,
+        EC_TAG_TYPES.EC_TAGTYPE_UINT32,
+        Object.values(EC_PREFS).reduce((a, b) => a | b, 0)
+      )
+    ];
+
+    const response = await this.session.sendPacket(EC_OPCODES.EC_OP_GET_PREFERENCES, reqTags);
+    const raw = this.buildTagTree(response.tags);
+
+    const g = raw.EC_TAG_PREFS_GENERAL || {};
+    const c = raw.EC_TAG_PREFS_CONNECTIONS || {};
+    const d = raw.EC_TAG_PREFS_DIRECTORIES || {};
+    const s = raw.EC_TAG_PREFS_SERVERS || {};
+    const sec = raw.EC_TAG_PREFS_SECURITY || {};
+    const f = raw.EC_TAG_PREFS_FILES || {};
+
+    return {
+      nick: g.EC_TAG_USER_NICK,
+      userHash: g.EC_TAG_USER_HASH,
+      maxDownload: c.EC_TAG_CONN_MAX_DL,
+      maxUpload: c.EC_TAG_CONN_MAX_UL,
+      maxConnections: c.EC_TAG_CONN_MAX_CONN,
+      tcpPort: c.EC_TAG_CONN_TCP_PORT,
+      udpPort: c.EC_TAG_CONN_UDP_PORT,
+      autoconnect: c.EC_TAG_CONN_AUTOCONNECT,
+      ed2kEnabled: c.EC_TAG_NETWORK_ED2K,
+      kadEnabled: c.EC_TAG_NETWORK_KADEMLIA,
+      incomingDir: d.EC_TAG_DIRECTORIES_INCOMING,
+      tempDir: d.EC_TAG_DIRECTORIES_TEMP,
+      sharedDirs: d.EC_TAG_DIRECTORIES_SHARED,
+      ipfilterLevel: sec.EC_TAG_IPFILTER_LEVEL,
+      obfuscationSupported: sec.EC_TAG_SECURITY_OBFUSCATION_SUPPORTED,
+      obfuscationRequested: sec.EC_TAG_SECURITY_OBFUSCATION_REQUESTED,
+      obfuscationRequired: sec.EC_TAG_SECURITY_OBFUSCATION_REQUIRED,
+      newFilesPaused: f.EC_TAG_FILES_NEW_PAUSED,
+      raw
+    };
+  }
+
+  async setMaxDownload(limit) {
+    return this._setBandwidth(EC_TAGS.EC_TAG_CONN_MAX_DL, limit);
+  }
+
+  async setMaxUpload(limit) {
+    return this._setBandwidth(EC_TAGS.EC_TAG_CONN_MAX_UL, limit);
+  }
+
+  async _setBandwidth(tag, limit) {
+    const children = [
+      {
+        tagId: tag,
+        tagType: EC_TAG_TYPES.EC_TAGTYPE_UINT32,
+        value: limit
+      }
+    ];
+
+    const reqTags = [
+      this.session.createTag(
+        EC_TAGS.EC_TAG_PREFS_CONNECTIONS,
+        EC_TAG_TYPES.EC_TAGTYPE_CUSTOM,
+        undefined,
+        children
+      )
+    ];
+
+    const response = await this.session.sendPacket(EC_OPCODES.EC_OP_SET_PREFERENCES, reqTags);
+    return response.opcode === EC_OPCODES.EC_OP_NOOP || response.opcode === 0x01;
+  }
+
+  async clearCompleted() {
+    const response = await this.session.sendPacket(EC_OPCODES.EC_OP_CLEAR_COMPLETED, []);
+    return response.opcode === EC_OPCODES.EC_OP_NOOP || response.opcode === 0x01;
+  }
+
   /*
       Helper functions
   */
